@@ -1,0 +1,17 @@
+slixmpp==1.12.0
+slixmpp-omemo>=2.0.0
+omemo>=2.0.0
+black==25.9.0
+python-dotenv==1.1.1
+requests>=2.32.5
+beautifulsoup4>=4.14.2
+langchain_ollama==1.0.1
+langchain==1.2.0
+langchain-core~=1.2.2
+ruff>=0.14.10
+aiohttp>=3.13.2
+pydantic-settings>=2.12.0
+mypy>=1.19.1
+types-requests>=2.32.4.20250913
+isort>=7.0.0
+pre-commit>=4.5.1
