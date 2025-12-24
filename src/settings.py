@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     IS_DEBUG: bool = False
     LOGGING_LEVEL: str = "INFO"
     ENABLE_TYPING_EFFECT: bool = True
+    MIN_RESPONSE_INTERVAL_SECONDS: int = 30
 
 
 settings = Settings()  # type: ignore[call-arg]

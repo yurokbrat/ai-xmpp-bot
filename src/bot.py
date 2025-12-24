@@ -1,12 +1,16 @@
 import asyncio
+import hashlib
+import imghdr
 import logging
 from asyncio import Task
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 from xml.etree.ElementTree import Element
 
 from slixmpp import JID, ClientXMPP, Message
 from slixmpp.plugins import register_plugin
+from slixmpp.plugins.xep_0084.avatar import AvatarMetadataItem
 from slixmpp.types import JidStr
 from slixmpp_omemo import XEP_0384
 
@@ -20,6 +24,7 @@ from src.utils import check_ollama_health
 register_plugin(XEP_0384Impl, name="XEP_0384Impl")
 
 MessageTypeLiteral = Literal["chat", "error", "groupchat", "headline", "normal"]
+ChatStatesLiteral = Literal["composing", "active"]
 
 
 class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
@@ -31,9 +36,10 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
         self.nick = nick
         self.llm_service = LLMService()
 
-        self.MAX_HISTORY_LENGTH: int = 20
+        self.MAX_HISTORY_LENGTH: int = 10
         self.MAX_RECONNECT_ATTEMPTS: int = 10
-        self.MIN_RESPONSE_INTERVAL: int = 15
+        self.MIN_RESPONSE_INTERVAL_SECONDS: int = settings.MIN_RESPONSE_INTERVAL_SECONDS
+        self.DEFAULT_CONTEXT: str = "Контекста нет"
 
         self.reconnect_attempts: int = 0
         self.message_history: list[dict[str, Any]] = []
@@ -46,7 +52,9 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
             PluginTypes.MULTI_USER_CHAT,
             PluginTypes.XMPP_PING,
             PluginTypes.PUB_SUB,
-            PluginTypes.MESSAGE_RETRACTION,
+            PluginTypes.CHAT_STATES,
+            PluginTypes.USER_AVATARS,
+            PluginTypes.V_CARD,
         ]:
             self.register_plugin(plugin.value)
         self.register_plugin(
@@ -65,6 +73,7 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
         """Инициализация бота."""
         await self.get_roster()
         self.send_presence()
+        await self.set_avatar(image_path="./static/avatar.jpg")
         welcome_message = "AI-Бот запущен и готов к работе"
         logging.info(welcome_message)
         await self.send_message_admin(message=f"🤖 {welcome_message}!")
@@ -83,6 +92,29 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
             self.reconnect()
         else:
             logging.error("Превышено максимальное количество попыток переподключения")
+
+    async def set_avatar(self, image_path: str) -> None:
+        """Установить аватар для бота."""
+        try:
+            if not Path(image_path).exists():
+                logging.error(f"Файл аватара не найден: {image_path}")
+                return None
+
+            with open(image_path, "rb") as f:
+                image_data = f.read()
+
+            avatar_hash = hashlib.sha1(image_data).hexdigest()
+            image_type = imghdr.what(None, h=image_data)
+            mime_type = f"image/{image_type}" if image_type else "image/jpeg"
+            await self.plugin[PluginTypes.USER_AVATARS.value].publish_avatar(  # type: ignore[typeddict-item]
+                data=image_data,
+            )
+            metadata_items = AvatarMetadataItem(id=avatar_hash, type=mime_type, bytes=len(image_data))
+            await self.plugin[
+                PluginTypes.USER_AVATARS.value  # type: ignore[typeddict-item]
+            ].publish_avatar_metadata(items=metadata_items)
+        except Exception as e:
+            logging.error(f"Произошла ошибка при установке аватара: {e}")
 
     async def join_muc_room(self, event: Any = None) -> None:
         """Подключиться к группе."""
@@ -104,6 +136,18 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
                 logging.info("Уведомление отправлено администратору")
             except Exception as e:
                 logging.error(f"❌ Ошибка уведомления администратора: {e}")
+
+    async def send_chat_state(self, state: ChatStatesLiteral):
+        """Отправить уведомление о наборе сообщения."""
+        try:
+            msg = self.Message()
+            msg["to"] = self.room
+            msg["type"] = "groupchat"
+            msg["id"] = self.new_id()
+            msg["chat_state"] = state
+            msg.send()
+        except Exception as e:
+            logging.error(f"Произошла ошибка при отправке уведомления о наборе сообщения: {e}")
 
     async def send_msg(
         self,
@@ -182,14 +226,12 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
             if not body:
                 return None
 
-            self._add_to_history(body=body, sender=msg["mucnick"], msg_type=mtype)
+            self._add_to_history(body=body, sender=msg["mucnick"])
 
             if self._too_soon_to_respond():
-                await self.send_msg(
-                    message="Слишком рано после предыдущего ответа, пропускаю",
-                    to=self.room,
-                )
-                logging.info("Слишком рано после предыдущего ответа, пропускаю")
+                too_soon_message = "Слишком рано после предыдущего ответа, пропускаю"
+                await self.send_debug_message(message=too_soon_message)
+                logging.info(too_soon_message)
                 return None
 
             if not await check_ollama_health():
@@ -208,38 +250,45 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
             await self.send_debug_message(message=f"Причина ответа:\n\n{reason}")
 
             try:
-                if not (context := await self.llm_service.analyze_context(self.message_history)):
+                await self.send_chat_state(state="composing")
+                context = await self.llm_service.analyze_context(self.message_history)
+
+                if not context:
                     logging.error("Контекста нет.")
+                    context = self.DEFAULT_CONTEXT
 
                 await self.send_debug_message(message=f"Контекст беседы:\n\n{context}")
-                code_result = await self.llm_service.detector_code(self.message_history)
+                code = await self.llm_service.detector_code(self.message_history)
                 await self.send_debug_message(
-                    message=f"Детектор кода:\n\n{code_result}",
+                    message=f"Детектор кода:\n\n{code}",
                     is_reply_admin=True,
                 )
-                if code_result.get("is_programming"):
+                if code and code.get("is_programming"):
                     response = await self.llm_service.generate_code_response(self.message_history)
                 else:
-                    response = await self.llm_service.generate_response(self.message_history, context)
+                    response = await self.llm_service.generate_response(  # type: ignore[assignment]
+                        conversation_history=self.message_history, context=context or self.DEFAULT_CONTEXT
+                    )
                 if response:
-                    self._add_to_history(body=response, sender=self.nick, msg_type="groupchat")
+                    self._add_to_history(body=response, sender=self.nick)
                     logging.info("Ответ сгенерирован! Отправляю...")
-
+                    await self.send_chat_state(state="active")
                     if settings.ENABLE_TYPING_EFFECT:
                         await self.send_message_with_typing(text=response, to_jid=self.room)
                     else:
                         await self.send_msg(message=response)
-
                     self.last_response_time = datetime.now()
                 else:
                     logging.warning("LLM не сгенерировал ответ")
             except Exception as e:
                 logging.error(f"Ошибка генерации ответа: {e}")
+                await self.send_chat_state(state="active")
                 self.stop_typing(self.room)
                 await self.send_message_admin(message=f"Ошибка: {str(e)[:50]}")
 
         except Exception as e:
             logging.error(f"Общая ошибка обработки: {e}")
+            await self.send_chat_state(state="active")
             self.stop_typing(self.room)
             raise e
 
@@ -300,21 +349,20 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
         replace_elem.set("id", replace_msg_id)
         message.xml.append(replace_elem)
 
-    def _add_to_history(self, body: str, sender, msg_type):
+    def _add_to_history(self, body: str, sender: str) -> None:
         """Добавляет сообщение в историю."""
         self.message_history.append(
             {
                 "sender": sender,
-                "text": body,
-                "time": datetime.now().strftime(format="%m/%d/%Y, %H:%M:%S"),
-                "type": msg_type,
+                "text": body.replace(self.nick, ""),
+                "time": datetime.now().strftime(format="%m-%d-%Y %H:%M:%S"),
             }
         )
 
         if len(self.message_history) > self.MAX_HISTORY_LENGTH:
             self.message_history.pop(0)
 
-    def _too_soon_to_respond(self):
+    def _too_soon_to_respond(self) -> bool:
         """Проверяет, не слишком ли рано для нового ответа."""
         elapsed = datetime.now() - self.last_response_time
-        return elapsed.total_seconds() < self.MIN_RESPONSE_INTERVAL
+        return elapsed.total_seconds() < self.MIN_RESPONSE_INTERVAL_SECONDS

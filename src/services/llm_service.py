@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+from typing import Any
 
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -36,33 +37,38 @@ class LLMService:
         """Создать цепочку для принятия решения отвечать или нет."""
         prompt = PromptTemplate(
             input_variables=["conversation"],
-            template="""CHAT (you are an AI bot, you are addressed as "bot", "AI", "AI"):
-            {conversation}
+            template="""{conversation}
 
-        Do you (the bot) need to respond now?
-                Chance to intervene for no reason: {random_chance}%
+        You are an participant in this chat.
 
-        (YES) if:
-            1. THEY ADDRESS YOU: "бот", "AI", "ИИ", "помоги", "подскажи"
-            2. THERE IS A QUESTION: "Что", "Как", "Почему", "Кто", "Когда"
-            3. ASK FOR HELP: "Я не знаю", "Не понимаю", "Помоги"
-            4. DISPUTE: different opinions, conflict
-            5. SILENCE: if there were few messages or they are old
-            4. Long pause (>5 messages with no subject)
-            5. {random_chance}% chance to add a line if the topic is interesting
+        Should you say something?
 
-        (NO) if:
-            1. JOKES: just laughing, joking
-            2. CHATTER: ordinary conversation without questions
-            3. DISCUSS SOMETHING ELSE: the topic does not require your participation
+        Answer YES if:
 
-        IMPORTANT: If there are the words "AI-бот", "Бот", "ИИ", "AI" in the text - it's almost always YES!
+        DEFINITELY YES:
+        - Someone mentioned bot/AI/AI-бот
+        - There's a question with "?"
+        - Someone asks for help
+        - {should_intervene} (chance to join conversation)
+        - Can add useful information
 
-        Answer ONLY in such format: DECISION | REASON where:
+        UP TO YOU:
+        - Any interesting topic
+        - Feel like chatting
+
+        NO only if:
+        - Very personal conversation
+        - Just replied recently
+        - A short phrase not addressed to you
+
+        IMPORTANT: If words "AI-бот", "Бот", "ИИ", "AI" appear in text - almost always YES!
+        Be sociable! Participate when possible.
+
+        Answer ONLY in format: DECISION | REASON
             DECISION: YES or NO
-            REASON: a brief reason (3-5 words)
+            REASON: brief reason (3-5 words)
 
-        Examples:
+        Examples answer:
             YES | Contacted the bot
             YES | Have a question
             NO | Just joking
@@ -71,7 +77,9 @@ class LLMService:
         return (
             {
                 "conversation": RunnablePassthrough(),
-                "random_chance": lambda x: random.randint(5, 30),
+                "should_intervene": lambda x: "Consider joining"
+                if random.random() < 0.3
+                else "No special reason",
             }
             | prompt
             | self.llm_general
@@ -111,7 +119,7 @@ class LLMService:
         """Определяет, связан ли вопрос с программированием"""
         prompt = PromptTemplate(
             input_variables=["message"],
-            template="""Analyze if this Russian message is about programming/coding/IT/DataBase:
+            template="""Analyze if this Russian message is about programming/coding/IT/DataBase/Git:
 
         Message: "{message}"
 
@@ -138,18 +146,17 @@ class LLMService:
     def _create_code_response_chain(self):
         prompt = PromptTemplate(
             input_variables=["question"],
-            template="""User asks in Russian: {question}
+            template="""Ты эксперт по программированию. Отвечай НА РУССКОМ.
 
-            You are an AI programming assistant. Respond in Russian.
+            Вопрос: {question}
 
-            Keep your answer:
-            - Short and clear
-            - In Russian language
-            - With simple example if needed.
-            - If you're writing code, then 3 indent before and after it
-            - Don't repeat user question!
+            Правила ответа:
+            1. Отвечай ТОЛЬКО на русском языке
+            2. Объясни кратко (2-3 предложения)
+            3. Если нужен пример кода - приведи короткий
+            4. Не повторяй вопрос
 
-            Answer ONLY in Russian:""",
+            Твой ответ на русском:""",
         )
         return {"question": RunnablePassthrough()} | prompt | self.llm_code | StrOutputParser()
 
@@ -159,8 +166,7 @@ class LLMService:
         prompt = PromptTemplate(
             input_variables=["conversation", "context_analysis"],
             template="""Ты - дружелюбный помощник в чате. Твоё имя - AI-бот.
-            Ты был создан Юрой для XMPP-чата с Герой. С тобой будут общаться, ты весело отвечай на вопросы.
-            Отвечай ТОЛЬКО на последнее сообщение от первого лица.
+            С тобой общаются как с живым собеседником.
 
             КОНТЕКСТ БЕСЕДЫ:
             {context_analysis}
@@ -169,17 +175,17 @@ class LLMService:
             {conversation}
 
             ПРАВИЛА ОТВЕТА:
-            1. Отвечай от первого лица (я, мне, мой)
-            1. Отвечай Средними предложениями (3-4 предложения)
-            2. Соответствуй настроению и стилю общения чата
-            3. Полностью поддерживай атмосферу и контекст беседы.
-            4. Не подписывайся и не добавляй префиксы!
+            1. Отвечай ЕСТЕСТВЕННО, как человек в беседе
+            2. Отвечай Средними предложениями (3-4 предложения)
+            3. Соответствуй настроению и стилю общения чата
+            4. Полностью поддерживай атмосферу и контекст беседы.
+            5. Не подписывайся и не добавляй префиксы!
 
             ВАЖНО: Не пытайся ответить на все сообщения сразу! Только на последнее.
 
-            Всегда давай понятный и чёткий ответ на русском языке!
+            Всегда давай понятный и чёткий ответ!
 
-            Твой ответ строго в формате сплошного текста:""",
+            Твой ответ строго на русском языке сплошным текстом:""",
         )
         return (
             {
@@ -192,7 +198,7 @@ class LLMService:
         )
 
     @staticmethod
-    def _format_conversation(messages):
+    def _format_conversation(messages: list[dict[str, Any]]) -> str:
         """Форматирует список сообщений в текст"""
         if not messages:
             return "История пуста"
@@ -206,12 +212,14 @@ class LLMService:
 
         return "\n".join(formatted)
 
-    async def analyze_conversation(self, conversation_history) -> tuple[bool | None, str]:
+    async def analyze_conversation(
+        self, conversation_history: list[dict[str, Any]]
+    ) -> tuple[bool | None, str]:
         """Анализирует, нужно ли отвечать"""
         if self.is_generating:
             logging.warning("Пропускаю запрос: уже идет генерация ответа")
             return None, "Пропускаю запрос: уже идет генерация ответа"
-        conv_text = self._format_conversation(conversation_history[-1:])
+        conv_text = self._format_conversation(conversation_history[-5:])
         self.is_generating = True
         logging.info(f"Анализ истории чата ({len(conversation_history)} сообщений)...")
         decision_result = await self.decision_chain.ainvoke(conv_text)
@@ -235,7 +243,7 @@ class LLMService:
             logging.error(f"Ошибка парсинга решения: {e}, raw: {decision_result}")
             return False, f"Ошибка парсинга: {str(e)[:50]}"
 
-    async def analyze_context(self, conversation_history):
+    async def analyze_context(self, conversation_history: list[dict[str, Any]]) -> str | None:
         if self.is_generating:
             logging.warning("Пропускаю запрос: уже идет анализ контекста")
             return None
@@ -249,7 +257,7 @@ class LLMService:
         logging.debug(f"Контекст LLM: {context_result}")
         return context_result
 
-    async def detector_code(self, conversation_history):
+    async def detector_code(self, conversation_history: list[dict[str, Any]]) -> dict[str, Any] | None:
         if self.is_generating:
             logging.warning("Пропускаю запрос: уже идет анализ контекста")
             return None
@@ -263,7 +271,7 @@ class LLMService:
         logging.debug(f"Code Detector from LLM: {context_result}")
         return context_result
 
-    async def generate_code_response(self, conversation_history):
+    async def generate_code_response(self, conversation_history: list[dict[str, Any]]) -> str:
         """Генерирует ответ на вопрос о коде"""
 
         logging.debug(f"Использование {settings.AI_CODE_MODEL} для генерации ответа...")
@@ -271,7 +279,9 @@ class LLMService:
         response = await self.code_response_chain.ainvoke(last_message)
         return response
 
-    async def generate_response(self, conversation_history, context: str) -> str | None:
+    async def generate_response(
+        self, conversation_history: list[dict[str, Any]], context: str | None
+    ) -> str | None:
         """Генерирует ответ после положительного анализа."""
 
         if self.is_generating:
