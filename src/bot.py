@@ -38,7 +38,6 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
 
         self.MAX_HISTORY_LENGTH: int = 10
         self.MAX_RECONNECT_ATTEMPTS: int = 10
-        self.MIN_RESPONSE_INTERVAL_SECONDS: int = settings.MIN_RESPONSE_INTERVAL_SECONDS
         self.DEFAULT_CONTEXT: str = "Контекста нет"
 
         self.reconnect_attempts: int = 0
@@ -365,4 +364,4 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
     def _too_soon_to_respond(self) -> bool:
         """Проверяет, не слишком ли рано для нового ответа."""
         elapsed = datetime.now() - self.last_response_time
-        return elapsed.total_seconds() < self.MIN_RESPONSE_INTERVAL_SECONDS
+        return elapsed.total_seconds() < settings.MIN_RESPONSE_INTERVAL_SECONDS
