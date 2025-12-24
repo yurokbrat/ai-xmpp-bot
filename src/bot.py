@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 from xml.etree.ElementTree import Element
 
+from ollama import ResponseError
 from slixmpp import JID, ClientXMPP, Message
 from slixmpp.plugins import register_plugin
 from slixmpp.plugins.xep_0084.avatar import AvatarMetadataItem
@@ -283,7 +284,15 @@ class SmartXMPPBot(TypingEffectMixin, ClientXMPP):
                 logging.error(f"Ошибка генерации ответа: {e}")
                 await self.send_chat_state(state="active")
                 self.stop_typing(self.room)
-                await self.send_message_admin(message=f"Ошибка: {str(e)[:50]}")
+                await self.send_message_admin(message=f"Ошибка: {str(e)[:150]}")
+
+        except ResponseError as ollama_error:
+            logging.error(f"Ошибка при подключении модели Ollama: {ollama_error}")
+            await self.send_chat_state(state="active")
+            self.stop_typing(self.room)
+            await self.send_message_admin(
+                message=f"Ошибка при подключении модели Ollama: {str(ollama_error)[:150]}"
+            )
 
         except Exception as e:
             logging.error(f"Общая ошибка обработки: {e}")
